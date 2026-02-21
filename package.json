@@ -1,0 +1,144 @@
+{
+  "name": "agent-context-display",
+  "displayName": "Agent Context Display",
+  "description": "Real-time visualization of agentic context/token usage from JSON logs — main agent and subagents",
+  "version": "0.1.0",
+  "publisher": "agent-context",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "agentContext.showTree",
+        "title": "Agent Context: Show Tree"
+      },
+      {
+        "command": "agentContext.openWebview",
+        "title": "Agent Context: Open Detail Panel"
+      },
+      {
+        "command": "agentContext.refresh",
+        "title": "Agent Context: Refresh Now"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "agentContext",
+          "title": "Agent Context",
+          "icon": "$(pulse)"
+        }
+      ]
+    },
+    "views": {
+      "agentContext": [
+        {
+          "id": "agentContextTree",
+          "name": "Context Usage"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Agent Context",
+      "properties": {
+        "agentContext.logFilePath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to JSONL log file"
+        },
+        "agentContext.dataSource": {
+          "type": "string",
+          "enum": [
+            "jsonl"
+          ],
+          "default": "jsonl",
+          "description": "Data source type"
+        },
+        "agentContext.pollIntervalMs": {
+          "type": "number",
+          "default": 2000,
+          "minimum": 1000,
+          "maximum": 30000,
+          "description": "Polling interval in milliseconds (1000-30000)"
+        },
+        "agentContext.logLevel": {
+          "type": "string",
+          "enum": [
+            "debug",
+            "info",
+            "warn",
+            "error"
+          ],
+          "default": "info",
+          "description": "Logging level for the extension"
+        },
+        "agentContext.warningThresholdPercent": {
+          "type": "number",
+          "default": 70,
+          "minimum": 1,
+          "maximum": 99,
+          "description": "Context usage percentage to trigger warning state"
+        },
+        "agentContext.criticalThresholdPercent": {
+          "type": "number",
+          "default": 85,
+          "minimum": 1,
+          "maximum": 100,
+          "description": "Context usage percentage to trigger critical state"
+        },
+        "agentContext.notifyOnCritical": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show notification when an agent crosses critical threshold"
+        },
+        "agentContext.showStatusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show status bar context summary"
+        },
+        "agentContext.statusBarMode": {
+          "type": "string",
+          "enum": [
+            "hottestAgent",
+            "sessionSummary"
+          ],
+          "default": "hottestAgent",
+          "description": "Status bar display mode"
+        },
+        "agentContext.webview.retainContext": {
+          "type": "boolean",
+          "default": false,
+          "description": "Keep webview state when hidden (uses more memory)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTests.js",
+    "test:unit": "mocha --require ts-node/register 'src/test/unit/**/*.test.ts' --timeout 10000",
+    "build": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.6",
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "@vscode/test-electron": "^2.3.8",
+    "eslint": "^8.56.0",
+    "mocha": "^10.3.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  }
+}

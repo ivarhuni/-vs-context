@@ -1,0 +1,54 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Agent Context Log Entry v1",
+  "description": "One JSONL line representing a snapshot of agent context usage",
+  "type": "object",
+  "required": ["v", "ts", "sessionId", "agents"],
+  "properties": {
+    "v": { "type": "integer", "const": 1 },
+    "ts": { "type": "string", "format": "date-time" },
+    "sessionId": { "type": "string", "minLength": 1 },
+    "agents": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/agent" },
+      "minItems": 1
+    }
+  },
+  "definitions": {
+    "agent": {
+      "type": "object",
+      "required": ["agentId", "role", "label", "status", "context"],
+      "properties": {
+        "agentId": { "type": "string", "minLength": 1 },
+        "role": { "type": "string", "enum": ["main", "subagent"] },
+        "label": { "type": "string" },
+        "parentAgentId": { "type": "string" },
+        "status": { "type": "string", "enum": ["running", "waiting", "done", "error"] },
+        "context": { "$ref": "#/definitions/contextSnapshot" },
+        "children": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/agent" },
+          "default": []
+        }
+      }
+    },
+    "contextSnapshot": {
+      "type": "object",
+      "required": ["usedTokens", "maxTokens"],
+      "properties": {
+        "usedTokens": { "type": "number", "minimum": 0 },
+        "maxTokens": { "type": "number", "minimum": 0 },
+        "breakdown": {
+          "type": "object",
+          "properties": {
+            "systemPrompt": { "type": "number", "minimum": 0 },
+            "userMessages": { "type": "number", "minimum": 0 },
+            "toolResults": { "type": "number", "minimum": 0 },
+            "fileContext": { "type": "number", "minimum": 0 },
+            "other": { "type": "number", "minimum": 0 }
+          }
+        }
+      }
+    }
+  }
+}
