@@ -4,6 +4,7 @@ import * as path from 'path';
 import { Logger } from '../util/logger';
 
 const MODULE = 'FilePoller';
+const MAX_CHUNK_BYTES = 10 * 1024 * 1024; // 10 MB safety cap per poll
 
 export interface FilePollerOptions {
   filePath: string;
@@ -147,7 +148,11 @@ export class FilePoller implements vscode.Disposable {
         return;
       }
 
-      const bytesToRead = stat.size - this.fileOffset;
+      const available = stat.size - this.fileOffset;
+      const bytesToRead = Math.min(available, MAX_CHUNK_BYTES);
+      if (available > MAX_CHUNK_BYTES) {
+        this.logger.warn(MODULE, `Log file grew by ${available} bytes; capping read to ${MAX_CHUNK_BYTES} bytes to protect memory. Remaining data will be read on subsequent polls.`);
+      }
       const buffer = Buffer.alloc(bytesToRead);
       const fh = await fs.promises.open(this.options.filePath, 'r');
       try {
@@ -156,7 +161,7 @@ export class FilePoller implements vscode.Disposable {
         await fh.close();
       }
 
-      this.fileOffset = stat.size;
+      this.fileOffset += bytesToRead;
       const chunk = buffer.toString('utf-8');
 
       this.onDataCallback?.(chunk);
