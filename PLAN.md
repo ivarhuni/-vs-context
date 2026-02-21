@@ -185,8 +185,19 @@ interface AgentSession {
   sessionId: string;
   startedAt: string;          // ISO 8601
   lastUpdatedAt: string;
-  mainAgent: Agent;
+  agents: Agent[];            // main agent + nested subagents
+  activeMainAgentId?: string; // preferred root for MVP display
+  sessionSummary: SessionSummary;
   status: 'active' | 'idle' | 'completed' | 'error';
+}
+
+interface SessionSummary {
+  hottestAgentId: string;
+  hottestAgentLabel: string;
+  hottestUsagePercent: number; // highest usage among main+subagents
+  totalAgents: number;
+  warningAgentCount: number;
+  criticalAgentCount: number;
 }
 
 interface Agent {
@@ -196,6 +207,7 @@ interface Agent {
   parentAgentId?: string;     // only for subagents
   contextUsage: ContextSnapshot;
   children: Agent[];          // nested subagents
+  riskLevel: 'normal' | 'warning' | 'critical';
   status: 'running' | 'waiting' | 'done' | 'error';
   lastActivityAt: string;
 }
@@ -262,9 +274,10 @@ Each line in the JSONL file represents one snapshot event:
 | Concern | Strategy |
 |---------|----------|
 | **Refresh cadence** | Default 2 s interval, user-configurable (1–30 s) via `agentContext.pollIntervalMs` setting. FileSystemWatcher triggers immediate parse on file change, debounced to min 500 ms. |
-| **Caching** | StateStore holds latest `AgentSession`. On each poll, compute SHA-256 hash of raw data; skip parse+emit if hash matches previous. |
-| **Deduplication** | JSONL lines with duplicate `(sessionId, ts)` tuples are dropped. Monotonic timestamp enforcement: discard lines with `ts` older than last processed. |
-| **Backpressure** | If parse takes longer than poll interval, skip the next poll cycle (busy flag). Webview message queue capped at 50 pending messages; oldest dropped on overflow. If webview is hidden and `retainContextWhenHidden` is false, buffer last state only (single-slot buffer) and replay on reveal. |
+| **Caching / incremental read** | Maintain `fileOffset` plus `pendingPartialLine` buffer. Parse only complete newline-delimited records from new bytes `[fileOffset, size)`. |
+| **Deduplication / ordering** | Drop duplicate `(sessionId, ts)` tuples. Enforce monotonic `ts` **per sessionId** (not globally) to avoid dropping valid interleaved sessions. |
+| **Backpressure** | If parse takes longer than poll interval, skip next cycle with busy flag. If 3+ consecutive skips occur, log `WARN` recommending a larger `pollIntervalMs`. |
+| **Context-burn visibility** | Compute `riskLevel` per agent and `sessionSummary.hottestUsagePercent` from thresholds so users can spot context pressure in real time. |
 
 ### 2.6 Resilience and Fallback Behavior
 
@@ -272,10 +285,12 @@ Each line in the JSONL file represents one snapshot event:
 |----------|----------|
 | Log file does not exist | Show "No log file configured" in TreeView root node. StatusBar shows "— no data". No errors thrown. |
 | Log file exists but is empty | Show "Waiting for data…" placeholder. |
+| Trailing partial JSONL line (no newline yet) | Keep bytes in `pendingPartialLine`; do not mark malformed until a full line is available and fails parse. |
 | Malformed JSON line | Skip line, increment `malformedLineCount` counter, log warning to Output channel. Continue processing remaining lines. |
 | SQLite file locked | Retry once after 500 ms. If still locked, fall back to cached state and log warning. |
 | SQLite key missing | Treat as "no data" — same as empty log. |
-| Schema version mismatch (`v` field) | Log warning, attempt best-effort parse. If critical fields missing, show "Unsupported log version" in TreeView. |
+| Schema version mismatch (`v` field) | If `v > supportedVersion`, show "Unsupported log version" and skip parse. If `v <= supportedVersion`, parse normally. |
+| Agent/subagent crosses critical threshold | Update TreeView/Webview/StatusBar immediately; optionally show one-shot notification for that transition. |
 | Poller throws unhandled exception | Catch at top level, log full stack trace, show error notification once (not repeatedly), continue polling. |
 | Webview disposed unexpectedly | Null-check before `postMessage`; re-create on next command invocation. |
 
@@ -296,7 +311,11 @@ Each line in the JSONL file represents one snapshot event:
 | `agentContext.dataSource` | `enum` | `"jsonl"` | `"jsonl"` or `"sqlite"` |
 | `agentContext.pollIntervalMs` | `number` | `2000` | Polling interval in ms (1000–30000) |
 | `agentContext.logLevel` | `enum` | `"info"` | `"debug"`, `"info"`, `"warn"`, `"error"` |
+| `agentContext.warningThresholdPercent` | `number` | `70` | Per-agent warning threshold for context usage percent |
+| `agentContext.criticalThresholdPercent` | `number` | `85` | Per-agent critical threshold for context usage percent |
+| `agentContext.notifyOnCritical` | `boolean` | `true` | Show one-shot notification when an agent crosses critical |
 | `agentContext.showStatusBar` | `boolean` | `true` | Show status bar summary |
+| `agentContext.statusBarMode` | `enum` | `"hottestAgent"` | `"hottestAgent"` or `"sessionSummary"` |
 | `agentContext.webview.retainContext` | `boolean` | `false` | Keep webview state when hidden |
 
 ### 2.9 Implementation Tasks (Ordered)
@@ -362,32 +381,52 @@ The following revisions incorporate all High and Medium findings. Low findings a
 
 ### 4.1 Revised Architecture Changes
 
-1. **Add `schema/logSchema.v1.json`** — JSON Schema file defining the JSONL contract. The parser validates against this schema (lightweight validation, not full JSON Schema validation library — use a hand-written validator for performance).
+This revision locks MVP around one workflow: **show live context/token burn for the active session (main agent + subagents) so users can catch context pressure without opening chat debug views.**
 
-2. **Replace full-file SHA-256 with incremental file reading:**
-   - Maintain a `fileOffset` cursor (bytes read so far).
-   - On each poll, `stat` the file. If `size > fileOffset`, read only `[fileOffset, size)`. If `size < fileOffset`, reset to 0 (truncation detected, log warning).
-   - Parse only the newly read chunk for JSONL lines.
-   - Last complete `AgentSession` wins (most recent `ts`).
+1. **Add `schema/logSchema.v1.json`** — JSON Schema file defining the JSONL contract.
 
-3. **SQLite adapter marked experimental:**
+2. **Define explicit schema compatibility contract:**
+   - `v: 1` is supported in MVP.
+   - If `v > supportedVersion`, show "Unsupported log version" with upgrade guidance and skip parse.
+
+3. **Align model and schema to avoid cardinality ambiguity:**
+   - `AgentSession` uses `agents: Agent[]` plus derived `sessionSummary`.
+   - MVP expects one main agent root, but if multiple roots appear, render all roots and log `WARN`.
+
+4. **Replace full-file hashing with incremental file reading plus partial-line safety:**
+   - Maintain `fileOffset` and `pendingPartialLine`.
+   - Parse only complete newline-delimited records from newly appended bytes.
+   - On truncation/rotation (`size < fileOffset`), reset offset to 0 and warn.
+
+5. **Ordering and dedup semantics:**
+   - Drop duplicate `(sessionId, ts)` tuples.
+   - Enforce monotonic timestamps per `sessionId` (not globally) to prevent false drops.
+
+6. **SQLite adapter marked experimental:**
    - On first connection, check `PRAGMA journal_mode`. Log the result.
    - Open with `readonly: true, fileMustExist: true`.
    - Set `PRAGMA busy_timeout = 1000`.
    - If `SQLITE_BUSY` persists after timeout, degrade to cached state and log `WARN`.
    - Document in README: "SQLite data source is experimental and may not work on all platforms."
 
-4. **Webview "current state only" UX:**
-   - Add an info banner: "Showing latest snapshot. Updated every N seconds."
-   - Single-slot buffer is acceptable given this framing.
+7. **Context-burn UX for at-a-glance monitoring:**
+   - TreeView root shows active session summary (`hottest agent`, `max usage %`, warning/critical counts).
+   - Tree items show token usage for main and every subagent.
+   - Status bar shows hottest agent or session summary based on setting.
 
-5. **Backpressure starvation detection:**
-   - Counter for consecutive skipped polls. At 3, log `WARN: "Parsing is consistently slower than poll interval. Consider increasing agentContext.pollIntervalMs."`.
+8. **Real-time threshold indicators:**
+   - Add warning and critical thresholds (defaults 70% and 85%).
+   - Agents crossing thresholds are highlighted immediately in TreeView/Webview.
+   - Optional one-shot critical notification on threshold crossing.
 
-6. **Accessibility:**
+9. **Webview "current state only" UX:**
+   - Info banner: "Showing latest snapshot. Updated every N seconds."
+   - Single-slot replay buffer is acceptable with this framing.
+
+10. **Accessibility + CSP hardening:**
    - `TreeItem.accessibilityInformation` with `label` and `role`.
-   - Webview HTML uses `<main>`, `<section>`, `<table>` with `aria-label` attributes.
-   - Keyboard navigation for webview chart elements.
+   - Webview uses semantic HTML and keyboard navigation.
+   - CSP blocks inline scripts; avoid inline styles unless nonce-protected.
 
 ### 4.2 Revised Task Breakdown
 
@@ -396,23 +435,23 @@ The following revisions incorporate all High and Medium findings. Low findings a
 | 1 | **Project scaffold** — `yo code`, TypeScript strict mode, esbuild, ESLint (`@typescript-eslint/recommended`), Prettier, `package.json` contributions. | — | `npm run compile` and `npm run lint` pass with zero errors. |
 | 2 | **CI pipeline** — GitHub Actions workflow: lint, compile, test on push/PR. | 1 | Workflow runs green on initial commit. |
 | 3 | **Logger module** | 1 | Output channel "Agent Context" works at all levels. |
-| 4 | **Settings module** | 1 | All settings readable; `onDidChangeConfiguration` fires; invalid values fall back to defaults. |
-| 5 | **JSONL schema definition** — `schema/logSchema.v1.json` + TypeScript types. | 1 | Schema file exists; types compile; example fixtures validate. |
-| 6 | **Agent domain model** — Interfaces, factories, and a lightweight validator. | 5 | Types compile; validator accepts valid fixtures, rejects invalid ones. |
-| 7 | **JSONL parser** — Incremental line parser with dedup, monotonic-ts enforcement, malformed-line skip. | 6, 3 | Parses valid lines; skips bad lines with `WARN` log; deduplicates correctly. |
+| 4 | **Settings module** | 1 | All settings readable; threshold settings validated; `onDidChangeConfiguration` updates runtime behavior. |
+| 5 | **JSONL schema definition** — `schema/logSchema.v1.json` + TypeScript types. | 1 | Schema file exists; versioning rules documented; types compile. |
+| 6 | **Agent domain model + validator** — `AgentSession.agents[]`, `sessionSummary`, `riskLevel` derivation. | 5 | Types compile; validator accepts valid fixtures and rejects invalid fixtures. |
+| 7 | **JSONL parser** — Incremental line parser with partial-line carryover, dedup, per-session monotonic-ts enforcement, malformed-line skip. | 6, 3 | Parses valid lines; preserves trailing partial lines until complete; unsupported versions are rejected with clear warning. |
 | 8 | **File poller** — Hybrid watcher + interval; incremental read with offset cursor; truncation detection; backpressure with starvation warning. | 3, 4 | Detects changes; reads incrementally; handles truncation; logs starvation warning after 3 skips. |
-| 9 | **State store** — In-memory `AgentSession`; typed event emitter; change detection via data comparison (no full-file hash). | 6, 7 | Emits only on actual change; subscribers receive correct state. |
-| 10 | **TreeView provider** — Hierarchy with icons, descriptions, accessibility info; placeholder nodes for empty/error/unsupported-version states. | 6, 9 | Renders agent tree; updates on state change; accessibility labels present. |
-| 11 | **Status bar manager** — Summary text, alignment right, priority 100; hides when no data; respects setting. | 9 | Correct display; hides/shows per setting; updates on state change. |
-| 12 | **Webview panel** — Pure CSS/SVG bar chart; CSP; `postMessage` integration; single-slot buffer; "current state" info banner; keyboard-navigable. | 9 | Opens via command; displays data; survives hide/show; CSP blocks inline scripts. |
+| 9 | **State store** — In-memory `AgentSession`; typed event emitter; derive hottest-agent/session-summary and threshold transitions. | 6, 7 | Emits only on actual change; subscribers receive state + derived summary; threshold crossings are detectable. |
+| 10 | **TreeView provider** — Session summary node + main/subagent hierarchy with token usage labels, risk indicators, and accessibility info. | 6, 9 | Renders main + subagents with token usage; highlights warning/critical agents; updates on state changes. |
+| 11 | **Status bar manager** — Summary text (hottest agent or session), alignment right, priority 100; respects settings. | 9 | Shows actionable context-burn signal; hides/shows per setting; updates on state change. |
+| 12 | **Webview panel** — Pure CSS/SVG chart for all agents; sorted by highest usage; CSP; single-slot buffer; current-state banner; keyboard-navigable. | 9 | Opens via command; visualizes token usage of main + subagents; survives hide/show; CSP blocks inline scripts. |
 | 13 | **SQLite poller (experimental)** — Read-only connection, WAL check, busy_timeout, `composerData` extraction. | 3, 4 | Reads data; handles locked file; logs journal mode. |
 | 14 | **SQLite parser** — Normalize `composerData` → `AgentSession`; handle missing fields. | 6, 13 | Produces valid model; gracefully handles unknown fields. |
-| 15 | **Error UX** — Notification on first error (deduplicated), TreeView error nodes, status bar error indicator. | 10, 11, 12 | Actionable error shown once; clears on resolution. |
+| 15 | **Error + alert UX** — Notification on first error (deduplicated), TreeView error nodes, status bar error indicator, critical-threshold crossing alert (deduplicated). | 10, 11, 12 | Actionable error shown once; critical alerts fire on transition only; both clear/re-arm when state normalizes. |
 | 16a | **Integration wiring: Poller → Parser → Store** | 7, 8, 9 | Data flows from file to store without manual intervention. |
 | 16b | **Integration wiring: Store → TreeView** | 9, 10 | TreeView refreshes on store change. |
 | 16c | **Integration wiring: Store → Webview + StatusBar** | 9, 11, 12 | Webview and status bar update on store change. |
 | 16d | **Integration wiring: Config change propagation** | 4, 8 | Changing poll interval or data source at runtime takes effect without restart. |
-| 17 | **Packaging and README** — `vsce package`, marketplace metadata, JSONL schema docs, setup instructions, experimental SQLite caveat. | 16a–d | `.vsix` installs; README is complete. |
+| 17 | **Packaging and README** — `vsce package`, marketplace metadata, JSONL schema docs, setup instructions, threshold guidance, experimental SQLite caveat. | 16a–d | `.vsix` installs; README clearly explains how to monitor context burn without chat debug tools. |
 
 ### 4.3 Dependency Graph (Mermaid)
 
@@ -437,7 +476,7 @@ graph TD
     T4 --> T13
     T6 --> T14[14: SQLite Parser]
     T13 --> T14
-    T10 --> T15[15: Error UX]
+    T10 --> T15[15: Error+Alert UX]
     T11 --> T15
     T12 --> T15
     T7 --> T16a[16a: Poller→Store]
@@ -478,10 +517,13 @@ graph TD
 | Test Case | Input | Expected Output | Pass/Fail Criteria |
 |-----------|-------|-----------------|-------------------|
 | Valid single line | Fixture `valid-single-agent.jsonl` (1 line) | `AgentSession` with 1 main agent, 0 subagents | Returned session matches fixture; no warnings logged. |
-| Valid multi-agent | Fixture `valid-multi-agent.jsonl` (1 line, 1 main + 2 subagents) | `AgentSession` with correct hierarchy | `mainAgent.children.length === 2`; all fields populated. |
+| Valid multi-agent | Fixture `valid-multi-agent.jsonl` (1 line, 1 main + 2 subagents) | `AgentSession` with correct hierarchy | `session.agents[0].children.length === 2`; all fields populated. |
 | Multiple lines, latest wins | Fixture `multi-line.jsonl` (3 lines, ascending `ts`) | `AgentSession` from line 3 | `session.lastUpdatedAt === line3.ts`. |
+| Interleaved sessions | Fixture with `sessionId=A` and `sessionId=B` interleaved | Latest snapshot per session tracked correctly | Older `A` line does not block newer `B` line; no false drops. |
 | Duplicate `(sessionId, ts)` | Fixture `duplicate-ts.jsonl` (2 lines, same sessionId+ts) | Single `AgentSession`, second line ignored | Deduplicated; only one session returned. |
-| Out-of-order timestamps | Fixture with `ts` line2 < line1 | Line2 discarded (monotonic enforcement) | Only line1's data in result; `WARN` logged. |
+| Out-of-order timestamps (same session) | Fixture with `ts` line2 < line1 for same `sessionId` | Line2 discarded (monotonic enforcement) | Only line1's data in result; `WARN` logged. |
+| Partial trailing line (chunk 1 only) | Read chunk ending mid-JSON with no trailing newline | No parse attempt yet | Parser returns previous valid state and stores remainder; no malformed increment. |
+| Partial trailing line completion (chunk 2) | Next chunk completes prior JSON + newline | Completed line parsed once | Session updates correctly; malformed count unchanged. |
 | Malformed JSON | `"not json at all\n{valid}"` | Skips line 1, parses line 2 | `malformedLineCount === 1`; valid session returned; `WARN` logged. |
 | Empty string input | `""` | `null` (no session) | Returns `null`; no errors. |
 | Unknown schema version `v: 99` | `{"v": 99, ...}` | `null` + version warning | Returns `null`; logs "Unsupported log version". |
@@ -497,6 +539,8 @@ graph TD
 | `usagePercent` edge case: `maxTokens === 0` | Returns `0` (not `NaN` or `Infinity`). |
 | `usagePercent` edge case: `usedTokens > maxTokens` | Returns `100` (capped). |
 | Nested subagent tree (3 levels) | Parent-child relationships preserved; `parentAgentId` correct. |
+| `riskLevel` derivation | Agent at 72% is `warning` and agent at 90% is `critical` for default thresholds. |
+| `sessionSummary` derivation | `hottestAgentLabel`, `hottestUsagePercent`, and warning/critical counts match flattened agent tree. |
 
 #### 5.2.3 State Store (`store/stateStore.ts`)
 
@@ -516,6 +560,8 @@ graph TD
 | Read default values | All defaults match specification table. |
 | Invalid `pollIntervalMs` (0) | Falls back to 2000. |
 | Invalid `pollIntervalMs` (99999) | Falls back to 30000 (max). |
+| Invalid threshold ordering | If `criticalThresholdPercent <= warningThresholdPercent`, fall back to defaults. |
+| Threshold config change | Updating warning/critical thresholds triggers recomputation on next state update. |
 | `onDidChangeConfiguration` fires | Callback invoked with changed key. |
 
 ### 5.3 Integration Tests
@@ -524,7 +570,9 @@ graph TD
 |-----------|-------|--------|----------|-----------|
 | **Poller → Parser → Store pipeline** | Create temp JSONL file with valid data. | Activate extension with `logFilePath` pointing to temp file. | `StateStore.getState()` returns parsed `AgentSession` within 3 s. | State matches fixture data. |
 | **File append triggers update** | Extension running with initial data. | Append new JSONL line to file. | `state-changed` fires; new state reflects appended data. | New agent data visible in store. |
+| **Partial append recovery** | Extension running; writer appends half JSON line without newline. | Append remainder + newline after delay. | No malformed warning on first half; state updates after completion. | Exactly one new snapshot is parsed after completion. |
 | **File truncation recovery** | Extension running; file has 100 lines. | Truncate file to 0 bytes, write 1 new line. | Offset resets; new line parsed; `WARN` logged. | Store has data from new line only. |
+| **Critical threshold crossing (subagent)** | Running state has subagent at 82% with critical=85%. | Append snapshot where same subagent goes to 90%. | Tree/Webview/StatusBar update immediately; one critical alert emitted. | Alert emitted exactly once for that crossing. |
 | **Config change at runtime** | Extension running with 2 s poll. | Change `pollIntervalMs` to 5000. | Next poll happens after ~5 s (not 2 s). | Timing within ±500 ms tolerance. |
 | **Activation lifecycle** | Extension not activated. | Open command palette, run "Agent Context: Show Tree". | Extension activates; TreeView appears. | No errors in Output channel. |
 | **Deactivation cleanup** | Extension running with active poller. | Trigger deactivation (close window in test). | All timers cleared; file watcher disposed; no leaked intervals. | Process exits cleanly; no `setInterval` warnings. |
@@ -536,9 +584,11 @@ graph TD
 | Test Case | Expected Behavior | Pass/Fail |
 |-----------|-------------------|-----------|
 | No data (empty file) | Root node shows "Waiting for data…" with info icon. | Node text and icon match. |
-| Single main agent, no subagents | One root node: agent label + context summary. | Correct label and description. |
+| Session summary node | Root shows active session + hottest agent + warning/critical counts. | Text reflects current derived summary. |
+| Single main agent, no subagents | One main-agent node under session summary with token usage. | Correct label and description. |
 | Main agent + 2 subagents | Root → main agent node → 2 child nodes. | `children.length === 2`. |
 | Agent status icons | `running` → play icon; `done` → check icon; `error` → error icon; `waiting` → clock icon. | Icon IDs match status. |
+| Risk indicator styling | Agents above warning/critical thresholds are visually distinct. | Warning/critical styles match threshold configuration. |
 | Context usage in description | Description shows "45,000 / 128,000 (35%)" | Formatted numbers; percentage correct. |
 | Refresh on state change | Append line → tree auto-refreshes. | New data visible without manual action. |
 | Error state | Malformed file → root node shows "Error reading data" with error icon. | Error node displayed. |
@@ -548,7 +598,8 @@ graph TD
 | Test Case | Expected Behavior | Pass/Fail |
 |-----------|-------------------|-----------|
 | Open command | Panel opens in editor area with title "Agent Context". | Panel visible; title correct. |
-| Bar chart renders | One bar per agent, width proportional to `usagePercent`. | Visual proportions correct (screenshot or DOM assertion). |
+| Bar chart renders | One bar per agent (main + subagents), width proportional to `usagePercent`. | Visual proportions correct (screenshot or DOM assertion). |
+| Highest-risk-first ordering | Agents are sorted by descending usage percent. | Top row is hottest agent in current snapshot. |
 | Info banner | "Showing latest snapshot" text visible at top. | DOM element present. |
 | Hide and re-show | Hide panel, trigger 3 state changes, re-show. | Shows latest state (not stale). | 
 | CSP enforcement | Inline `<script>` in webview HTML | Script does not execute (CSP blocks it). |
@@ -558,7 +609,7 @@ graph TD
 
 | Test Case | Expected Behavior | Pass/Fail |
 |-----------|-------------------|-----------|
-| Data present | Shows "CTX 45k/128k · 35%" | Text matches formatted values. |
+| Data present | Shows hottest-agent or session summary (e.g., "CTX Researcher 90% · 115k/128k"). | Text matches configured mode and formatted values. |
 | No data | Shows "CTX —" or hides | Consistent with `showStatusBar` setting. |
 | Setting `showStatusBar: false` | Status bar item hidden. | Item not visible. |
 | Click action | Clicking status bar opens TreeView sidebar. | Sidebar focused. |
@@ -567,14 +618,14 @@ graph TD
 
 | Check | Method | Threshold | Pass/Fail |
 |-------|--------|-----------|-----------|
-| JSONL parse latency (100 lines) | `performance.now()` around parse call | < 10 ms | Measured time under threshold. |
-| JSONL parse latency (10,000 lines, incremental — last 100 new) | Same | < 15 ms (only new lines parsed) | Under threshold. |
-| State diff latency | Time `setState` including change detection | < 2 ms | Under threshold. |
-| Poll cycle total time | Time from interval fire to store update | < 50 ms | Under threshold. |
-| Memory: no growth over 1,000 poll cycles | Heap snapshot before/after | < 5 MB growth | Within tolerance. |
-| Webview `postMessage` round-trip | Time from `postMessage` to `onDidReceiveMessage` ack | < 50 ms | Under threshold. |
-| Extension activation time | `Developer: Startup Performance` timing | < 200 ms | Under threshold. |
-| Disposal: no lingering timers | After deactivation, check for active `setInterval` handles | 0 remaining | Clean disposal. |
+| JSONL parse latency (100 lines) | `performance.now()` around parse call | p95 < 20 ms (local baseline target) | Benchmark target; warn if exceeded repeatedly. |
+| JSONL parse latency (10,000 lines, incremental — last 100 new) | Same | p95 < 25 ms | Benchmark target; warn if exceeded repeatedly. |
+| State diff latency | Time `setState` including change detection | p95 < 5 ms | Benchmark target; warn if exceeded repeatedly. |
+| Poll cycle total time | Time from interval fire to store update | p95 < 100 ms | Benchmark target; warn if exceeded repeatedly. |
+| Memory: no growth over 1,000 poll cycles | Heap snapshot before/after | < 10 MB growth | Within tolerance. |
+| Webview `postMessage` round-trip | Time from `postMessage` to `onDidReceiveMessage` ack | p95 < 75 ms | Benchmark target; warn if exceeded repeatedly. |
+| Extension activation time | `Developer: Startup Performance` timing | < 300 ms target | Target only; optimize if consistently slower. |
+| Disposal: no lingering timers | After deactivation, check for active `setInterval` handles | 0 remaining | Hard pass/fail gate. |
 
 ### 5.6 Test Fixtures
 
@@ -622,18 +673,18 @@ this is not json
 
 | Module | Unit | Integration | UI Behavior | Performance |
 |--------|------|-------------|-------------|-------------|
-| `jsonlParser` | 10 cases | Pipeline test | — | Parse latency |
+| `jsonlParser` | 12+ cases (including partial-line) | Pipeline + partial-append tests | — | Parse latency |
 | `agentModel` | 5 cases | — | — | — |
 | `stateStore` | 6 cases | Pipeline test | — | Diff latency |
 | `settings` | 4 cases | Config change test | — | — |
-| `filePoller` | — | Pipeline, truncation, deactivation | — | Poll cycle time |
-| `agentTreeProvider` | — | — | 7 cases | — |
-| `webviewPanel` | — | — | 6 cases | Message round-trip |
+| `filePoller` | — | Pipeline, partial-append, truncation, deactivation | — | Poll cycle time |
+| `agentTreeProvider` | — | — | 9 cases | — |
+| `webviewPanel` | — | — | 7 cases | Message round-trip |
 | `statusBarManager` | — | — | 4 cases | — |
 | `sqlitePoller` | — | SQLite pipeline (if adapter enabled) | — | — |
 | `sqliteParser` | (mirrors jsonlParser structure) | — | — | — |
 | `extension.ts` (lifecycle) | — | Activation, deactivation | — | Activation time |
-| **Overall** | **25+ cases** | **6 cases** | **17 cases** | **8 checks** |
+| **Overall** | **30+ cases** | **8 cases** | **20 cases** | **8 checks** |
 
 ---
 
@@ -646,7 +697,7 @@ this is not json
 | Q1 | What is the exact JSON structure of `composerData` for agent sessions with subagents in current Cursor versions? | Blocks SQLite adapter implementation. | Manually inspect `state.vscdb` on a machine with Cursor; document the schema; build parser to match. Treat as best-effort/experimental. |
 | Q2 | Does Cursor hold exclusive write locks on `state.vscdb` during active sessions? | May make SQLite source unusable. | Test empirically on macOS, Linux, Windows. If locks conflict, document limitation and recommend JSONL source. |
 | Q3 | Will Cursor expose a public API or event bus for agent context data in the future? | Could replace the entire polling mechanism. | Monitor Cursor changelog and forum. Design the poller interface so it can be swapped for an API adapter. |
-| Q4 | What is the desired behavior when multiple sessions are active simultaneously? | Affects data model (single session vs. list). | MVP: show only the most recent active session. Future: session picker dropdown. |
+| Q4 | Do we need a multi-session picker in MVP? | Affects UI scope and implementation complexity. | MVP decision: show the most recently updated active session by default, include session count in summary when multiple sessions are detected, and defer picker UI to a later phase. |
 | Q5 | Should the extension support remote development scenarios (SSH, WSL, Codespaces)? | File paths and watchers behave differently. | MVP: local only. Document remote as unsupported. Future: test and fix path resolution for remote. |
 | Q6 | Is there a maximum JSONL file size we should support before recommending rotation? | Affects incremental read performance. | Recommend max 50 MB in docs. Log a warning if file exceeds threshold. Only parse tail of file beyond threshold. |
 
@@ -659,4 +710,4 @@ this is not json
 | A3 | The extension will run in the same Cursor/VS Code instance that generates the agent data. | Scoped to single-instance local use. |
 | A4 | Users opting for the JSONL data source will have an external process writing the log file. | The extension is a reader, not a writer. |
 | A5 | TreeView API supports dynamic refresh via `onDidChangeTreeData` event emitter. | Documented in VS Code Tree View API guide. |
-| A6 | Webview CSP allows inline styles but blocks inline scripts when properly configured. | Documented in VS Code Webview API guide. |
+| A6 | Webview CSP blocks inline scripts; styles should be external or nonce-protected (avoid unrestricted inline styles). | Documented in VS Code Webview API guide. |
