@@ -5,6 +5,7 @@ import {
   computeSessionSummary,
   createAgent,
   createSession,
+  flattenAgents,
   RawAgentData,
   RawLogEntry,
   Thresholds,
@@ -208,6 +209,43 @@ describe('agentModel', () => {
       assert.strictEqual(session.sessionSummary.warningAgentCount, 1);
       assert.strictEqual(session.sessionSummary.criticalAgentCount, 1);
       assert.strictEqual(session.sessionSummary.totalAgents, 3);
+    });
+  });
+
+  describe('flattenAgents', () => {
+    it('flattens nested agent tree', () => {
+      const entry: RawLogEntry = {
+        v: 1, ts, sessionId: 'sess-1',
+        agents: [
+          {
+            agentId: 'main-1', role: 'main', label: 'Main', status: 'running',
+            context: { usedTokens: 10000, maxTokens: 128000 },
+            children: [
+              {
+                agentId: 'sub-1', role: 'subagent', parentAgentId: 'main-1',
+                label: 'Sub1', status: 'running',
+                context: { usedTokens: 5000, maxTokens: 128000 },
+                children: [
+                  {
+                    agentId: 'sub-1-1', role: 'subagent', parentAgentId: 'sub-1',
+                    label: 'SubSub1', status: 'done',
+                    context: { usedTokens: 2000, maxTokens: 128000 },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+      const session = createSession(entry, defaultThresholds);
+      const flat = flattenAgents(session.agents);
+      assert.strictEqual(flat.length, 3);
+      assert.deepStrictEqual(flat.map(a => a.agentId), ['main-1', 'sub-1', 'sub-1-1']);
+    });
+
+    it('returns empty array for no agents', () => {
+      const flat = flattenAgents([]);
+      assert.strictEqual(flat.length, 0);
     });
   });
 
