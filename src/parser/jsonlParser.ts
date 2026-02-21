@@ -1,4 +1,4 @@
-import { RawLogEntry, AgentSession, createSession, Thresholds } from '../model/agentModel';
+import { RawLogEntry, AgentSession, createSession, Thresholds, MAX_AGENT_DEPTH } from '../model/agentModel';
 import { Logger } from '../util/logger';
 
 const SUPPORTED_VERSION = 1;
@@ -10,6 +10,7 @@ export interface ParseResult {
 }
 
 const MAX_DEDUP_KEYS = 10000;
+const MAX_SESSIONS = 100;
 
 export class JsonlParser {
   private pendingPartialLine: string = '';
@@ -128,6 +129,20 @@ export class JsonlParser {
     }
 
     this.sessions.set(entry.sessionId, session);
+
+    if (this.sessions.size > MAX_SESSIONS) {
+      this.evictOldestSessions();
+    }
+  }
+
+  private evictOldestSessions(): void {
+    const sorted = [...this.sessions.entries()]
+      .sort((a, b) => a[1].lastUpdatedAt.localeCompare(b[1].lastUpdatedAt));
+    const toRemove = sorted.slice(0, sorted.length - MAX_SESSIONS);
+    for (const [id] of toRemove) {
+      this.sessions.delete(id);
+      this.latestTsPerSession.delete(id);
+    }
   }
 
   private isValidEntry(obj: unknown): obj is RawLogEntry {
@@ -163,6 +178,29 @@ export class JsonlParser {
       return false;
     }
 
+    const agents = record['agents'] as unknown[];
+    for (const agent of agents) {
+      if (!this.isValidAgentShape(agent)) {
+        this.malformedLineCount++;
+        this.logger.warn(MODULE, 'Agent entry failed structural validation');
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  private isValidAgentShape(obj: unknown, depth: number = 0): boolean {
+    if (depth > MAX_AGENT_DEPTH) { return false; }
+    if (typeof obj !== 'object' || obj === null) { return false; }
+    const a = obj as Record<string, unknown>;
+    if (typeof a['agentId'] !== 'string' || a['agentId'] === '') { return false; }
+    if (typeof a['context'] !== 'object' || a['context'] === null) { return false; }
+    if (Array.isArray(a['children'])) {
+      for (const child of a['children'] as unknown[]) {
+        if (!this.isValidAgentShape(child, depth + 1)) { return false; }
+      }
+    }
     return true;
   }
 }

@@ -53,6 +53,7 @@ export interface Thresholds {
 }
 
 const DEFAULT_THRESHOLDS: Thresholds = { warningPercent: 70, criticalPercent: 85 };
+export const MAX_AGENT_DEPTH = 10;
 
 export function computeUsagePercent(used: number, max: number): number {
   if (max <= 0) { return 0; }
@@ -66,12 +67,13 @@ export function computeRiskLevel(usagePercent: number, thresholds: Thresholds = 
   return 'normal';
 }
 
-export function flattenAgents(agents: Agent[]): Agent[] {
+export function flattenAgents(agents: Agent[], depth: number = 0): Agent[] {
+  if (depth > MAX_AGENT_DEPTH) { return []; }
   const result: Agent[] = [];
   for (const a of agents) {
     result.push(a);
     if (a.children.length > 0) {
-      result.push(...flattenAgents(a.children));
+      result.push(...flattenAgents(a.children, depth + 1));
     }
   }
   return result;
@@ -133,38 +135,52 @@ export interface RawLogEntry {
   agents: RawAgentData[];
 }
 
-export function createAgent(raw: RawAgentData, ts: string, thresholds: Thresholds = DEFAULT_THRESHOLDS): Agent {
-  const usagePercent = computeUsagePercent(raw.context.usedTokens, raw.context.maxTokens);
+export function createAgent(raw: RawAgentData, ts: string, thresholds: Thresholds = DEFAULT_THRESHOLDS, depth: number = 0): Agent {
+  const usedTokens = toFiniteNumber(raw.context?.usedTokens);
+  const maxTokens = toFiniteNumber(raw.context?.maxTokens);
+  const usagePercent = computeUsagePercent(usedTokens, maxTokens);
   const riskLevel = computeRiskLevel(usagePercent, thresholds);
 
-  const breakdown: ContextBreakdown | undefined = raw.context.breakdown
+  const breakdown: ContextBreakdown | undefined = raw.context?.breakdown
     ? {
-        systemPrompt: raw.context.breakdown.systemPrompt ?? 0,
-        userMessages: raw.context.breakdown.userMessages ?? 0,
-        toolResults: raw.context.breakdown.toolResults ?? 0,
-        fileContext: raw.context.breakdown.fileContext ?? 0,
-        other: raw.context.breakdown.other ?? 0,
+        systemPrompt: toFiniteNumber(raw.context.breakdown.systemPrompt),
+        userMessages: toFiniteNumber(raw.context.breakdown.userMessages),
+        toolResults: toFiniteNumber(raw.context.breakdown.toolResults),
+        fileContext: toFiniteNumber(raw.context.breakdown.fileContext),
+        other: toFiniteNumber(raw.context.breakdown.other),
       }
     : undefined;
 
-  const children = (raw.children ?? []).map(c => createAgent(c, ts, thresholds));
+  const children = depth < MAX_AGENT_DEPTH
+    ? (raw.children ?? []).map(c => createAgent(c, ts, thresholds, depth + 1))
+    : [];
 
   return {
-    agentId: raw.agentId,
-    role: raw.role,
-    label: raw.label,
+    agentId: String(raw.agentId ?? ''),
+    role: raw.role === 'subagent' ? 'subagent' : 'main',
+    label: String(raw.label ?? ''),
     parentAgentId: raw.parentAgentId,
     contextUsage: {
-      usedTokens: raw.context.usedTokens,
-      maxTokens: raw.context.maxTokens,
+      usedTokens,
+      maxTokens,
       usagePercent,
       breakdown,
     },
     children,
     riskLevel,
-    status: raw.status,
+    status: sanitizeStatus(raw.status),
     lastActivityAt: ts,
   };
+}
+
+function toFiniteNumber(value: unknown): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function sanitizeStatus(value: unknown): AgentStatus {
+  const allowed: AgentStatus[] = ['running', 'waiting', 'done', 'error'];
+  return allowed.includes(value as AgentStatus) ? (value as AgentStatus) : 'running';
 }
 
 export function createSession(entry: RawLogEntry, thresholds: Thresholds = DEFAULT_THRESHOLDS): AgentSession {
