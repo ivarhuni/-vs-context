@@ -86,19 +86,23 @@ export class AgentContextWebviewPanel implements vscode.Disposable {
 
   private renderBar(agent: Agent): string {
     const pct = agent.contextUsage.usagePercent;
-    const used = agent.contextUsage.usedTokens.toLocaleString();
-    const max = agent.contextUsage.maxTokens.toLocaleString();
+    const used = this.esc(agent.contextUsage.usedTokens.toLocaleString());
+    const max = this.esc(agent.contextUsage.maxTokens.toLocaleString());
     const width = Math.max(pct, 2);
+    const cssClass = this.sanitizeClassName(agent.riskLevel);
+    const widthStr = this.esc(width.toFixed(1));
+    const pctDisplay = this.esc(pct.toFixed(0));
+    const pctAria = this.esc(pct.toFixed(1));
 
     return `
-    <div class="agent-bar" role="listitem" aria-label="${this.esc(agent.label)}, ${pct.toFixed(1)}% context used">
+    <div class="agent-bar" role="listitem" aria-label="${this.esc(agent.label)}, ${pctAria}% context used">
       <div class="agent-label">
         <span>${this.esc(agent.label)}<span class="agent-role">${this.esc(agent.role)}</span></span>
         <span class="status-badge">${this.esc(agent.status)}</span>
       </div>
       <div class="bar-track">
-        <div class="bar-fill ${agent.riskLevel}" style="width: ${width.toFixed(1)}%">
-          ${used} / ${max} (${pct.toFixed(0)}%)
+        <div class="bar-fill ${cssClass}" style="width: ${widthStr}%">
+          ${used} / ${max} (${pctDisplay}%)
         </div>
       </div>
     </div>`;
@@ -106,19 +110,31 @@ export class AgentContextWebviewPanel implements vscode.Disposable {
 
   private flattenAndSort(agents: Agent[]): Agent[] {
     const result: Agent[] = [];
-    const collect = (list: Agent[]) => {
+    const MAX_DEPTH = 10;
+    const collect = (list: Agent[], depth: number) => {
+      if (depth > MAX_DEPTH) { return; }
       for (const a of list) {
         result.push(a);
-        collect(a.children);
+        collect(a.children, depth + 1);
       }
     };
-    collect(agents);
+    collect(agents, 0);
     result.sort((a, b) => b.contextUsage.usagePercent - a.contextUsage.usagePercent);
     return result;
   }
 
+  private sanitizeClassName(value: string): string {
+    const allowed = ['normal', 'warning', 'critical'];
+    return allowed.includes(value) ? value : 'normal';
+  }
+
   private esc(text: string): string {
-    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   dispose(): void {

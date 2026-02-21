@@ -1,0 +1,15 @@
+.vscode/**
+.vscode-test/**
+src/**
+node_modules/**
+.gitignore
+.eslintrc.json
+.mocharc.yml
+tsconfig.json
+PLAN.md
+HANDOFF.md
+package-lock.json
+**/*.map
+**/*.ts
+**/*.d.ts
+out/test/**
