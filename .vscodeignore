@@ -7,6 +7,7 @@ node_modules/**
 .mocharc.yml
 tsconfig.json
 PLAN.md
+HANDOFF.md
 package-lock.json
 **/*.map
 **/*.ts
