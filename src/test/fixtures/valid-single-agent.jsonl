@@ -1,0 +1,1 @@
+{"v":1,"ts":"2026-02-21T10:00:00.000Z","sessionId":"sess-001","agents":[{"agentId":"main-1","role":"main","label":"Orchestrator","status":"running","context":{"usedTokens":45000,"maxTokens":128000,"breakdown":{"systemPrompt":2000,"userMessages":8000,"toolResults":30000,"fileContext":5000}},"children":[]}]}
