@@ -22,7 +22,7 @@ export class AgentContextWebviewPanel implements vscode.Disposable {
       'Agent Context',
       vscode.ViewColumn.Two,
       {
-        enableScripts: true,
+        enableScripts: false,
         retainContextWhenHidden: this.retainContext,
         localResourceRoots: [extensionUri],
       },

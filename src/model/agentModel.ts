@@ -66,7 +66,7 @@ export function computeRiskLevel(usagePercent: number, thresholds: Thresholds = 
   return 'normal';
 }
 
-function flattenAgents(agents: Agent[]): Agent[] {
+export function flattenAgents(agents: Agent[]): Agent[] {
   const result: Agent[] = [];
   for (const a of agents) {
     result.push(a);

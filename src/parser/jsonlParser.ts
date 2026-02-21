@@ -9,6 +9,8 @@ export interface ParseResult {
   malformedLineCount: number;
 }
 
+const MAX_DEDUP_KEYS = 10000;
+
 export class JsonlParser {
   private pendingPartialLine: string = '';
   private seenKeys = new Set<string>();
@@ -102,6 +104,14 @@ export class JsonlParser {
       return;
     }
     this.seenKeys.add(dedupKey);
+
+    if (this.seenKeys.size > MAX_DEDUP_KEYS) {
+      const iter = this.seenKeys.values();
+      for (let i = 0; i < MAX_DEDUP_KEYS / 2; i++) {
+        const val = iter.next().value;
+        if (val !== undefined) { this.seenKeys.delete(val); }
+      }
+    }
 
     const latestTs = this.latestTsPerSession.get(entry.sessionId);
     if (latestTs && entry.ts < latestTs) {

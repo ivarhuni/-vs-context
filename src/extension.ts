@@ -7,6 +7,7 @@ import { StateStore } from './store/stateStore';
 import { AgentTreeProvider } from './views/agentTreeProvider';
 import { StatusBarManager } from './views/statusBarManager';
 import { AgentContextWebviewPanel } from './views/webviewPanel';
+import { AgentSession, flattenAgents } from './model/agentModel';
 
 const MODULE = 'Extension';
 
@@ -17,17 +18,18 @@ let store: StateStore;
 let treeProvider: AgentTreeProvider;
 let statusBar: StatusBarManager;
 let webviewPanel: AgentContextWebviewPanel;
+let currentSettings: ExtensionSettings;
 const criticalNotifiedAgents = new Set<string>();
 
 export function activate(context: vscode.ExtensionContext): void {
-  const settings = readSettings();
+  currentSettings = readSettings();
 
-  logger = new Logger('Agent Context', settings.logLevel);
+  logger = new Logger('Agent Context', currentSettings.logLevel);
   logger.info(MODULE, 'Activating Agent Context Display extension');
 
   parser = new JsonlParser(logger, {
-    warningPercent: settings.warningThresholdPercent,
-    criticalPercent: settings.criticalThresholdPercent,
+    warningPercent: currentSettings.warningThresholdPercent,
+    criticalPercent: currentSettings.criticalThresholdPercent,
   });
 
   store = new StateStore();
@@ -35,9 +37,10 @@ export function activate(context: vscode.ExtensionContext): void {
   statusBar = new StatusBarManager();
   webviewPanel = new AgentContextWebviewPanel();
 
-  statusBar.setVisible(settings.showStatusBar);
-  statusBar.setMode(settings.statusBarMode);
-  webviewPanel.setRetainContext(settings.webviewRetainContext);
+  statusBar.setVisible(currentSettings.showStatusBar);
+  statusBar.setMode(currentSettings.statusBarMode);
+  statusBar.setThresholds(currentSettings.warningThresholdPercent, currentSettings.criticalThresholdPercent);
+  webviewPanel.setRetainContext(currentSettings.webviewRetainContext);
 
   const treeView = vscode.window.createTreeView('agentContextTree', {
     treeDataProvider: treeProvider,
@@ -49,14 +52,14 @@ export function activate(context: vscode.ExtensionContext): void {
     statusBar.update(session);
     webviewPanel.update(session);
 
-    if (settings.notifyOnCritical && session) {
-      checkCriticalThresholds(session, settings);
+    if (currentSettings.notifyOnCritical && session) {
+      checkCriticalThresholds(session, currentSettings);
     }
   });
 
   poller = new FilePoller({
-    filePath: settings.logFilePath,
-    pollIntervalMs: settings.pollIntervalMs,
+    filePath: currentSettings.logFilePath,
+    pollIntervalMs: currentSettings.pollIntervalMs,
   }, logger);
 
   poller.onData(chunk => {
@@ -76,7 +79,17 @@ export function activate(context: vscode.ExtensionContext): void {
     logger.info(MODULE, 'Parser and store reset due to file truncation/rotation');
   });
 
+  poller.onMissing(() => {
+    if (currentSettings.logFilePath && !store.getState()) {
+      treeProvider.refresh(null, `Log file not found: ${currentSettings.logFilePath}`);
+    }
+  });
+
   poller.start();
+
+  if (!currentSettings.logFilePath) {
+    treeProvider.refresh(null, 'No log file configured. Set agentContext.logFilePath in settings.');
+  }
 
   const settingsDisposable = onSettingsChanged(newSettings => {
     applySettings(newSettings);
@@ -106,6 +119,7 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 function applySettings(settings: ExtensionSettings): void {
+  currentSettings = settings;
   logger.setLevel(settings.logLevel);
   logger.info(MODULE, 'Settings changed, reconfiguring...');
 
@@ -116,6 +130,7 @@ function applySettings(settings: ExtensionSettings): void {
 
   statusBar.setVisible(settings.showStatusBar);
   statusBar.setMode(settings.statusBarMode);
+  statusBar.setThresholds(settings.warningThresholdPercent, settings.criticalThresholdPercent);
   webviewPanel.setRetainContext(settings.webviewRetainContext);
 
   poller.reconfigure({
@@ -131,9 +146,9 @@ function applySettings(settings: ExtensionSettings): void {
   }
 }
 
-function checkCriticalThresholds(session: import('./model/agentModel').AgentSession, settings: ExtensionSettings): void {
-  const flatAgents = flattenAgents(session.agents);
-  for (const agent of flatAgents) {
+function checkCriticalThresholds(session: AgentSession, settings: ExtensionSettings): void {
+  const allAgents = flattenAgents(session.agents);
+  for (const agent of allAgents) {
     if (agent.contextUsage.usagePercent >= settings.criticalThresholdPercent) {
       if (!criticalNotifiedAgents.has(agent.agentId)) {
         criticalNotifiedAgents.add(agent.agentId);
@@ -145,17 +160,6 @@ function checkCriticalThresholds(session: import('./model/agentModel').AgentSess
       criticalNotifiedAgents.delete(agent.agentId);
     }
   }
-}
-
-function flattenAgents(agents: import('./model/agentModel').Agent[]): import('./model/agentModel').Agent[] {
-  const result: import('./model/agentModel').Agent[] = [];
-  for (const a of agents) {
-    result.push(a);
-    if (a.children.length > 0) {
-      result.push(...flattenAgents(a.children));
-    }
-  }
-  return result;
 }
 
 export function deactivate(): void {

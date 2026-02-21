@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
+import * as path from 'path';
 import { Logger } from '../util/logger';
 
 const MODULE = 'FilePoller';
@@ -22,6 +23,7 @@ export class FilePoller implements vscode.Disposable {
   private disposed: boolean = false;
   private onDataCallback: DataCallback | undefined;
   private onResetCallback: (() => void) | undefined;
+  private onFileNotFound: (() => void) | undefined;
   private debounceTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(options: FilePollerOptions, logger: Logger) {
@@ -37,6 +39,10 @@ export class FilePoller implements vscode.Disposable {
     this.onResetCallback = callback;
   }
 
+  onMissing(callback: () => void): void {
+    this.onFileNotFound = callback;
+  }
+
   start(): void {
     if (this.disposed) { return; }
     if (!this.options.filePath) {
@@ -47,21 +53,18 @@ export class FilePoller implements vscode.Disposable {
     this.logger.info(MODULE, `Starting file poller for: ${this.options.filePath}`);
 
     try {
-      const pattern = new vscode.RelativePattern(
-        vscode.Uri.file(this.options.filePath),
-        '*'
-      );
-      this.watcher = vscode.workspace.createFileSystemWatcher(
-        pattern, true, false, true
-      );
+      const dirPath = path.dirname(this.options.filePath);
+      const fileName = path.basename(this.options.filePath);
+      const pattern = new vscode.RelativePattern(vscode.Uri.file(dirPath), fileName);
+      this.watcher = vscode.workspace.createFileSystemWatcher(pattern, true, false, true);
       this.watcher.onDidChange(() => this.debouncedPoll());
     } catch (err) {
       this.logger.warn(MODULE, `FileSystemWatcher setup failed, relying on interval polling: ${err}`);
     }
 
-    this.timer = setInterval(() => this.poll(), this.options.pollIntervalMs);
+    this.timer = setInterval(() => { void this.poll(); }, this.options.pollIntervalMs);
 
-    this.poll();
+    void this.poll();
   }
 
   stop(): void {
@@ -93,7 +96,7 @@ export class FilePoller implements vscode.Disposable {
       if (this.timer) {
         clearInterval(this.timer);
       }
-      this.timer = setInterval(() => this.poll(), this.options.pollIntervalMs);
+      this.timer = setInterval(() => { void this.poll(); }, this.options.pollIntervalMs);
     }
   }
 
@@ -107,10 +110,10 @@ export class FilePoller implements vscode.Disposable {
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
     }
-    this.debounceTimer = setTimeout(() => this.poll(), 500);
+    this.debounceTimer = setTimeout(() => { void this.poll(); }, 500);
   }
 
-  private poll(): void {
+  private async poll(): Promise<void> {
     if (this.disposed || !this.options.filePath) { return; }
 
     if (this.busy) {
@@ -125,13 +128,14 @@ export class FilePoller implements vscode.Disposable {
     this.consecutiveSkips = 0;
 
     try {
-      if (!fs.existsSync(this.options.filePath)) {
+      let stat: fs.Stats;
+      try {
+        stat = await fs.promises.stat(this.options.filePath);
+      } catch {
         this.logger.debug(MODULE, 'Log file does not exist');
-        this.busy = false;
+        this.onFileNotFound?.();
         return;
       }
-
-      const stat = fs.statSync(this.options.filePath);
 
       if (stat.size < this.fileOffset) {
         this.logger.warn(MODULE, `File truncated/rotated (size ${stat.size} < offset ${this.fileOffset}). Resetting.`);
@@ -140,17 +144,16 @@ export class FilePoller implements vscode.Disposable {
       }
 
       if (stat.size === this.fileOffset) {
-        this.busy = false;
         return;
       }
 
       const bytesToRead = stat.size - this.fileOffset;
       const buffer = Buffer.alloc(bytesToRead);
-      const fd = fs.openSync(this.options.filePath, 'r');
+      const fh = await fs.promises.open(this.options.filePath, 'r');
       try {
-        fs.readSync(fd, buffer, 0, bytesToRead, this.fileOffset);
+        await fh.read(buffer, 0, bytesToRead, this.fileOffset);
       } finally {
-        fs.closeSync(fd);
+        await fh.close();
       }
 
       this.fileOffset = stat.size;

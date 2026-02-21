@@ -5,6 +5,8 @@ export class StatusBarManager implements vscode.Disposable {
   private item: vscode.StatusBarItem;
   private visible: boolean = true;
   private mode: 'hottestAgent' | 'sessionSummary' = 'hottestAgent';
+  private warningThreshold: number = 70;
+  private criticalThreshold: number = 85;
 
   constructor() {
     this.item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
@@ -24,6 +26,11 @@ export class StatusBarManager implements vscode.Disposable {
 
   setMode(mode: 'hottestAgent' | 'sessionSummary'): void {
     this.mode = mode;
+  }
+
+  setThresholds(warning: number, critical: number): void {
+    this.warningThreshold = warning;
+    this.criticalThreshold = critical;
   }
 
   update(session: AgentSession | null): void {
@@ -62,8 +69,8 @@ export class StatusBarManager implements vscode.Disposable {
   }
 
   private getRiskIcon(usagePercent: number): string {
-    if (usagePercent >= 85) { return '$(error)'; }
-    if (usagePercent >= 70) { return '$(warning)'; }
+    if (usagePercent >= this.criticalThreshold) { return '$(error)'; }
+    if (usagePercent >= this.warningThreshold) { return '$(warning)'; }
     return '$(pulse)';
   }
 
