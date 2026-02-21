@@ -4,12 +4,37 @@
   "description": "Real-time visualization of agentic context/token usage from JSON logs — main agent and subagents",
   "version": "0.1.0",
   "publisher": "agent-context",
+  "license": "MIT",
+  "icon": "images/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ivarhuni/-vs-context"
+  },
+  "homepage": "https://github.com/ivarhuni/-vs-context#readme",
+  "bugs": {
+    "url": "https://github.com/ivarhuni/-vs-context/issues"
+  },
+  "keywords": [
+    "agent",
+    "context",
+    "token",
+    "llm",
+    "ai",
+    "monitoring",
+    "visualization",
+    "subagent"
+  ],
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": [
+    "Visualization",
     "Other"
   ],
+  "galleryBanner": {
+    "color": "#1a1a2e",
+    "theme": "dark"
+  },
   "activationEvents": [
     "onStartupFinished"
   ],
@@ -122,12 +147,14 @@
     }
   },
   "scripts": {
+    "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "lint": "eslint src --ext ts",
     "test": "node ./out/test/runTests.js",
     "test:unit": "mocha --require ts-node/register 'src/test/unit/**/*.test.ts' --timeout 10000",
-    "build": "npm run compile"
+    "build": "npm run compile",
+    "package": "npx @vscode/vsce package --no-dependencies"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.6",
