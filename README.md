@@ -16,6 +16,7 @@
 - [Installation](#installation)
   - [Install from VSIX](#install-from-vsix)
   - [Build from Source](#build-from-source)
+  - [Uninstall](#uninstall)
 - [Configuration](#configuration)
 - [JSONL Log Format](#jsonl-log-format)
 - [Commands](#commands)
@@ -135,6 +136,19 @@ For a faster feedback loop during development:
 1. Open the project folder in VS Code.
 2. Press `F5` to launch the Extension Development Host.
 3. The extension activates automatically in the new window.
+
+### Uninstall
+
+To uninstall the extension from VS Code:
+
+```bash
+code --uninstall-extension agent-context.agent-context-display
+```
+
+Optional cleanup:
+
+- Remove any `agentContext.*` settings from your `settings.json` if you no longer need them.
+- Delete locally built `.vsix` files (for example, `agent-context-display-0.1.0.vsix`) if you no longer need the installer artifact.
 
 ---
 
