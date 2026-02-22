@@ -14,7 +14,6 @@
 - [Features](#features)
 - [Quickstart](#quickstart)
 - [Installation](#installation)
-  - [From the VS Code Marketplace](#from-the-vs-code-marketplace)
   - [Install from VSIX](#install-from-vsix)
   - [Build from Source](#build-from-source)
 - [Configuration](#configuration)
@@ -62,7 +61,7 @@ This gives you instant visibility into context pressure across your entire agent
 
 Get up and running in under two minutes:
 
-1. **Install the extension** from the VS Code Marketplace (search for *Agent Context Display*) or [build from source](#build-from-source).
+1. **Install the extension** from a `.vsix` package ([Install from VSIX](#install-from-vsix)) or [build from source](#build-from-source).
 
 2. **Create a sample log file** to see the extension in action. Save the following as `~/agent-log.jsonl`:
 
@@ -99,16 +98,11 @@ That's it — the extension will continue watching the log file and update every
 
 ## Installation
 
-### From the VS Code Marketplace
-
-1. Open VS Code.
-2. Go to the Extensions view (`Ctrl+Shift+X` / `Cmd+Shift+X`).
-3. Search for **Agent Context Display**.
-4. Click **Install**.
+This extension is not currently available in the VS Code Marketplace.
 
 ### Install from VSIX
 
-If you have a `.vsix` package file:
+If you have a `.vsix` package file, install it with:
 
 ```bash
 code --install-extension agent-context-display-0.1.0.vsix
@@ -318,14 +312,6 @@ npm run lint
 # Produces agent-context-display-0.1.0.vsix
 npm run package
 ```
-
-To publish to the VS Code Marketplace:
-
-```bash
-npx @vscode/vsce publish
-```
-
-You will need a [Personal Access Token](https://code.visualstudio.com/api/working-with-extensions/publishing-extension#get-a-personal-access-token) with the *Marketplace (Manage)* scope.
 
 ---
 
