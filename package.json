@@ -25,7 +25,7 @@
     "subagent"
   ],
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.109.0"
   },
   "categories": [
     "Visualization",
@@ -77,15 +77,20 @@
         "agentContext.logFilePath": {
           "type": "string",
           "default": "",
-          "description": "Absolute path to JSONL log file"
+          "description": "Absolute path to JSONL log file (only used when dataSource is 'jsonl')"
         },
         "agentContext.dataSource": {
           "type": "string",
           "enum": [
+            "copilot-chat",
             "jsonl"
           ],
-          "default": "jsonl",
-          "description": "Data source type"
+          "enumDescriptions": [
+            "Automatically read live token usage from VS Code Copilot Chat session files (no configuration needed)",
+            "Read from a custom JSONL log file (set agentContext.logFilePath)"
+          ],
+          "default": "copilot-chat",
+          "description": "Data source for agent context usage"
         },
         "agentContext.pollIntervalMs": {
           "type": "number",
@@ -93,6 +98,13 @@
           "minimum": 1000,
           "maximum": 30000,
           "description": "Polling interval in milliseconds (1000-30000)"
+        },
+        "agentContext.activityWindowMinutes": {
+          "type": "number",
+          "default": 60,
+          "minimum": 5,
+          "maximum": 1440,
+          "description": "Sessions inactive for longer than this many minutes are hidden from the view"
         },
         "agentContext.logLevel": {
           "type": "string",
@@ -157,15 +169,16 @@
     "package": "npx @vscode/vsce package --no-dependencies"
   },
   "devDependencies": {
-    "@types/mocha": "^10.0.6",
-    "@types/node": "^20.11.0",
-    "@types/vscode": "^1.85.0",
-    "@typescript-eslint/eslint-plugin": "^7.0.0",
-    "@typescript-eslint/parser": "^7.0.0",
-    "@vscode/test-electron": "^2.3.8",
-    "eslint": "^8.56.0",
-    "mocha": "^10.3.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^25.3.0",
+    "@types/vscode": "^1.109.0",
+    "@typescript-eslint/eslint-plugin": "^8.56.0",
+    "@typescript-eslint/parser": "^8.56.0",
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.7.1",
+    "eslint": "^10.0.1",
+    "mocha": "^11.7.5",
     "ts-node": "^10.9.2",
-    "typescript": "^5.3.3"
+    "typescript": "^5.9.3"
   }
 }

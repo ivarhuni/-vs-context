@@ -2,8 +2,9 @@ import * as vscode from 'vscode';
 
 export interface ExtensionSettings {
   logFilePath: string;
-  dataSource: 'jsonl';
+  dataSource: 'jsonl' | 'copilot-chat';
   pollIntervalMs: number;
+  activityWindowMinutes: number;
   logLevel: 'debug' | 'info' | 'warn' | 'error';
   warningThresholdPercent: number;
   criticalThresholdPercent: number;
@@ -15,8 +16,9 @@ export interface ExtensionSettings {
 
 const DEFAULTS: ExtensionSettings = {
   logFilePath: '',
-  dataSource: 'jsonl',
+  dataSource: 'copilot-chat',
   pollIntervalMs: 2000,
+  activityWindowMinutes: 60,
   logLevel: 'info',
   warningThresholdPercent: 70,
   criticalThresholdPercent: 85,
@@ -44,8 +46,9 @@ export function readSettings(): ExtensionSettings {
 
   return {
     logFilePath: cfg.get<string>('logFilePath', DEFAULTS.logFilePath),
-    dataSource: 'jsonl',
+    dataSource: cfg.get<ExtensionSettings['dataSource']>('dataSource', DEFAULTS.dataSource),
     pollIntervalMs,
+    activityWindowMinutes: clamp(cfg.get<number>('activityWindowMinutes', DEFAULTS.activityWindowMinutes), 5, 1440),
     logLevel: cfg.get<ExtensionSettings['logLevel']>('logLevel', DEFAULTS.logLevel),
     warningThresholdPercent,
     criticalThresholdPercent,

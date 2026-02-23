@@ -1,0 +1,8 @@
+{
+  "servers": {
+    "context7": {
+      "command": "/Users/ivarj/.nvm/versions/node/v24.11.1/bin/npx",
+      "args": ["-y", "@upstash/context7-mcp@latest"]
+    }
+  }
+}
